@@ -2,7 +2,7 @@
 
 [English](./README.md) | [中文](./README_zh.md)
 
-[![arXiv](https://img.shields.io/badge/arXiv-coming_soon-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
+[![arXiv](https://img.shields.io/badge/arXiv-2604.21724-b31b1b.svg)](https://arxiv.org/abs/2604.21724)
 [![License](https://img.shields.io/badge/license-Modified_MIT-blue.svg)](./LICENSE)
 
 Efficient token-indexed memory injection for Transformer language models.
@@ -12,7 +12,7 @@ Efficient token-indexed memory injection for Transformer language models.
 **Description:** Plug-and-play research code for X-gram, an efficient
 token-indexed memory injection framework for Transformer language models.
 
-**Website:** https://arxiv.org/abs/XXXX.XXXXX
+**Website:** https://arxiv.org/abs/2604.21724
 
 **Topics:** `language-models`, `transformers`, `pytorch`, `olmo`,
 `memory-augmentation`, `embedding-injection`, `token-indexed-memory`,
@@ -355,19 +355,17 @@ If you add a new injection mode, the usual touch points are:
 
 ## Citation
 
-If this repository is useful for your work, please cite the project. The arXiv
-identifier below is a placeholder that will index the public paper link once the
-paper is released.
+If this repository is useful for your work, please cite the paper:
 
 ```bibtex
-@misc{xgram2026,
-  title        = {X-gram: Efficient Token-Indexed Memory Injection for Transformer Language Models},
-  author       = {X-gram Contributors},
-  year         = {2026},
-  eprint       = {XXXX.XXXXX},
-  archivePrefix = {arXiv},
-  primaryClass = {cs.CL},
-  howpublished = {\url{https://github.com/Longyichen/X-gram}}
+@misc{chen2026ngramdataawarexgramextraction,
+  title={Beyond N-gram: Data-Aware X-GRAM Extraction for Efficient Embedding Parameter Scaling},
+  author={Yilong Chen and Yanxi Xie and Zitian Gao and He Xin and Yihao Xiao and Renbiao Liu and Haoming Luo and Yifan Luo and Zhengmao Ye and Tingwen Liu and Xin Zhao and Ran Tao and Bryan Dai},
+  year={2026},
+  eprint={2604.21724},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL},
+  url={https://arxiv.org/abs/2604.21724},
 }
 ```
 
