@@ -43,4 +43,3 @@ embedding_injection:
   hash_token_map_path: ./assets/token_maps/injection_token_map_alpha0_5_M32_Cap75968_mc3_mwd0_8.npz
   lambda_init: 1.0
   lambda_warmup_enabled: true
-  log_interval: 100

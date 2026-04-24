@@ -10,7 +10,7 @@ from .engram import (
     apply_engram_pre_block,
     build_engram_modules,
 )
-from .metrics import _warmup_scale_to_python_float, static_injection_logger, static_o_injection_logger
+from .metrics import _warmup_scale_to_python_float
 from .mort import (
     apply_mort_sparse_injection,
     build_mort_modules,
@@ -41,6 +41,4 @@ __all__ = [
     "prepare_mort_block_kwargs",
     "prepare_retoken_block_kwargs",
     "prepare_xgram_block_kwargs",
-    "static_injection_logger",
-    "static_o_injection_logger",
 ]

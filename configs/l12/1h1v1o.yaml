@@ -44,4 +44,3 @@ embedding_injection:
   hash_enabled: false
   lambda_init: 1.0
   lambda_warmup_enabled: true
-  log_interval: 100

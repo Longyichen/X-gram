@@ -378,7 +378,7 @@ def _build_embedding_injection_config_from_env(
         lambda_warmup_enabled=lambda_warmup_enabled,
         lambda_warmup_steps=lambda_warmup_steps,
         lambda_warmup_scale=lambda_warmup_scale,
-        log_interval=100 if injection_log_interval is None else injection_log_interval,
+        log_interval=0 if injection_log_interval is None else injection_log_interval,
         depth_scale_disabled=_parse_bool_env("INJECTION_DEPTH_SCALE_DISABLE", "0"),
         engram_tokenizer_id=os.environ.get("ENGRAM_TOKENIZER_ID", streaming_tokenizer_model),
         engram_cache_path=os.environ.get("ENGRAM_LOOKUP_CACHE"),

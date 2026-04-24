@@ -2,7 +2,11 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING, Dict, List, Optional
+from functools import lru_cache
+from pathlib import Path
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+
+import numpy as np
 
 from olmo_core.config import Config, DType, StrEnum
 from olmo_core.doc_utils import beta_feature
@@ -23,6 +27,70 @@ if TYPE_CHECKING:
     from .model import Transformer
 
 log = logging.getLogger(__name__)
+
+_XGRAM_TARGET_SET = {"h", "q", "k", "v", "o"}
+_QKVO_TARGET_SET = {"q", "k", "v", "o"}
+
+
+def _resolve_layers(
+    configured_layers: Optional[List[int]],
+    *,
+    default_layers: Optional[List[int]] = None,
+) -> List[int]:
+    if configured_layers is not None:
+        return list(configured_layers)
+    return list(default_layers) if default_layers is not None else []
+
+
+@lru_cache(maxsize=None)
+def _load_hash_token_map_total_capacity(token_map_path: str) -> int:
+    path = Path(token_map_path)
+    if not path.exists():
+        raise OLMoConfigurationError(f"hash token map '{token_map_path}' does not exist")
+    with np.load(path, allow_pickle=True) as data:
+        if "total_capacity" not in data:
+            raise OLMoConfigurationError(
+                f"hash token map '{token_map_path}' is missing required field 'total_capacity'"
+            )
+        return int(np.asarray(data["total_capacity"]).reshape(()).item())
+
+
+def _attention_injection_dim(d_model: int, attention: AttentionConfig) -> int:
+    n_heads = attention.n_heads
+    n_kv_heads = attention.n_kv_heads or n_heads
+    if n_heads <= 0 or n_kv_heads <= 0 or d_model % n_heads != 0:
+        raise OLMoConfigurationError(
+            f"Invalid attention config for X-gram param counting: d_model={d_model}, "
+            f"n_heads={n_heads}, n_kv_heads={n_kv_heads}"
+        )
+    return n_kv_heads * (d_model // n_heads)
+
+
+def _swiglu_shortconv_num_params(dim: int, kernel_size: int) -> int:
+    return dim * (2 * kernel_size + 1)
+
+
+def _is_prime(n: int) -> bool:
+    if n <= 1:
+        return False
+    if n <= 3:
+        return True
+    if n % 2 == 0 or n % 3 == 0:
+        return False
+    i = 5
+    while i * i <= n:
+        if n % i == 0 or n % (i + 2) == 0:
+            return False
+        i += 6
+    return True
+
+
+def _next_prime(start: int, seen: Set[int]) -> int:
+    candidate = max(2, start)
+    while True:
+        if _is_prime(candidate) and candidate not in seen:
+            return candidate
+        candidate += 1
 
 
 
@@ -155,7 +223,7 @@ class TransformerEmbeddingInjectionConfig(Config):
     lambda_init: float = 1.0
     lambda_warmup_enabled: bool = True
     lambda_warmup_steps: int = 0
-    log_interval: int = 100
+    log_interval: int = 0
     depth_scale_disabled: bool = False
     engram_tokenizer_id: Optional[str] = None
     engram_cache_path: Optional[str] = None
@@ -449,10 +517,6 @@ class TransformerConfig(Config):
         """
         from .model import MoETransformer, NormalizedTransformer, Transformer
 
-        log.info(
-            f"Building transformer with {self.num_params:,d} total params, "
-            f"{self.num_non_embedding_params:,d} non-embedding params"
-        )
         model: Transformer
         if self.name == TransformerType.default:
             model = Transformer(
@@ -502,6 +566,15 @@ class TransformerConfig(Config):
         else:
             raise NotImplementedError(self.name)
 
+        non_embed_params = getattr(model, "num_non_embedding_params", None)
+        if non_embed_params is None:
+            log.warning("Model is missing 'num_non_embedding_params'; reporting 0 for logging.")
+            non_embed_params = 0
+        log.info(
+            f"Building transformer with {model.num_params:,d} total params, "
+            f"{non_embed_params:,d} non-embedding params"
+        )
+
         if self.freeze_params:
             for name, param in model.named_parameters():
                 for pattern in self.freeze_params:
@@ -513,10 +586,6 @@ class TransformerConfig(Config):
                     log.info(f"Param '{name}' will be trainable")
 
         log.info("%s", model)
-        non_embed_params = getattr(model, "num_non_embedding_params", None)
-        if non_embed_params is None:
-            log.warning("Model is missing 'num_non_embedding_params'; reporting 0 for logging.")
-            non_embed_params = 0
         log.info(
             f"Built model with:\n"
             f"- {model.num_params:,d} total params\n"
@@ -525,6 +594,309 @@ class TransformerConfig(Config):
         )
 
         return model
+
+    def _count_xgram_container_params(
+        self,
+        layers: List[int],
+        *,
+        dim: int,
+        hash_enabled: bool,
+        shortconv_enabled: bool,
+        kernels: List[int],
+        hash_total_capacity: Optional[int],
+    ) -> Tuple[int, int]:
+        module_count = len(layers)
+        if module_count == 0:
+            return 0, 0
+
+        if hash_enabled:
+            if hash_total_capacity is None:
+                raise OLMoConfigurationError(
+                    "X-gram hash parameter counting requires hash_token_map_path to be set"
+                )
+            # Hash injection has one bucket embedding table plus one scalar-weight embedding
+            # table per module.
+            embedding_like = module_count * hash_total_capacity * (dim + 1)
+        else:
+            embedding_like = module_count * self.vocab_size * dim
+
+        total = embedding_like + module_count  # one scalar gate parameter per module
+        if shortconv_enabled:
+            per_block_counts: Dict[int, int] = {}
+            for layer_idx in layers:
+                conv_idx = per_block_counts.get(layer_idx, 0)
+                kernel_size = kernels[conv_idx % len(kernels)]
+                total += _swiglu_shortconv_num_params(dim, kernel_size)
+                per_block_counts[layer_idx] = conv_idx + 1
+
+        return total, embedding_like
+
+    def _count_xgram_container_params_per_layer(
+        self,
+        layers: List[int],
+        *,
+        dim_by_layer: Dict[int, int],
+        hash_enabled: bool,
+        shortconv_enabled: bool,
+        kernels: List[int],
+        hash_total_capacity: Optional[int],
+    ) -> Tuple[int, int]:
+        total = 0
+        embedding_like = 0
+        if not layers:
+            return total, embedding_like
+
+        per_block_counts: Dict[int, int] = {}
+        for layer_idx in layers:
+            dim = dim_by_layer[layer_idx]
+            if hash_enabled:
+                if hash_total_capacity is None:
+                    raise OLMoConfigurationError(
+                        "X-gram hash parameter counting requires hash_token_map_path to be set"
+                    )
+                embedding_like += hash_total_capacity * (dim + 1)
+            else:
+                embedding_like += self.vocab_size * dim
+
+            total += 1  # scalar gate parameter
+            if shortconv_enabled:
+                conv_idx = per_block_counts.get(layer_idx, 0)
+                kernel_size = kernels[conv_idx % len(kernels)]
+                total += _swiglu_shortconv_num_params(dim, kernel_size)
+                per_block_counts[layer_idx] = conv_idx + 1
+
+        total += embedding_like
+        return total, embedding_like
+
+    def _block_config_for_layer(self, layer_idx: int) -> TransformerBlockConfig:
+        if self.block_overrides is not None and layer_idx in self.block_overrides:
+            return self.block_overrides[layer_idx]
+        return self.block
+
+    def _xgram_injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+
+        injection_targets = list(cfg.targets or ["h"])
+        attention_targets = [target for target in injection_targets if target in _QKVO_TARGET_SET]
+        h_target_enabled = "h" in injection_targets
+        attention_qkv_targets = [target for target in attention_targets if target in {"q", "k", "v"}]
+        attention_qkv_target_set = set(attention_qkv_targets)
+        attention_qk_sharing_active = cfg.qk_sharing and {"q", "k"}.issubset(attention_qkv_target_set)
+
+        default_h_layers = _resolve_layers(getattr(cfg, "h_layers", None), default_layers=list(cfg.layers))
+        default_qkv_layers = default_h_layers
+        configured_qk_layers = list(cfg.qk_layers) if cfg.qk_layers is not None else None
+        target_layers = {
+            "q": _resolve_layers(
+                configured_qk_layers if attention_qk_sharing_active else getattr(cfg, "q_layers", None),
+                default_layers=default_qkv_layers if "q" in attention_targets else [],
+            ),
+            "k": _resolve_layers(
+                configured_qk_layers if attention_qk_sharing_active else getattr(cfg, "k_layers", None),
+                default_layers=default_qkv_layers if "k" in attention_targets else [],
+            ),
+            "v": _resolve_layers(
+                getattr(cfg, "v_layers", None),
+                default_layers=default_qkv_layers if "v" in attention_targets else [],
+            ),
+            "o": _resolve_layers(
+                getattr(cfg, "o_layers", None),
+                default_layers=default_h_layers if "o" in attention_targets else [],
+            ),
+        }
+
+        hash_enabled = bool(getattr(cfg, "hash_enabled", False))
+        hash_total_capacity: Optional[int] = None
+        if hash_enabled:
+            token_map_path = getattr(cfg, "hash_token_map_path", None)
+            if not token_map_path:
+                raise OLMoConfigurationError(
+                    "TransformerEmbeddingInjectionConfig.hash_enabled=True requires hash_token_map_path"
+                )
+            hash_total_capacity = _load_hash_token_map_total_capacity(str(token_map_path))
+
+        shortconv_enabled = bool(getattr(cfg, "shortconv_enabled", False))
+        kernels = list(getattr(cfg, "shortconv_kernels", None) or [3, 5, 7, 9])
+        attention_dim_by_layer = {
+            layer_idx: _attention_injection_dim(
+                self.d_model,
+                self._block_config_for_layer(layer_idx).attention,
+            )
+            for layer_idx in set(target_layers["q"] + target_layers["k"] + target_layers["v"])
+        }
+
+        total = 0
+        embedding_like = 0
+        if h_target_enabled:
+            h_total, h_embedding_like = self._count_xgram_container_params(
+                default_h_layers,
+                dim=self.d_model,
+                hash_enabled=hash_enabled,
+                shortconv_enabled=shortconv_enabled,
+                kernels=kernels,
+                hash_total_capacity=hash_total_capacity,
+            )
+            total += h_total
+            embedding_like += h_embedding_like
+
+        qkv_specs: List[Tuple[str, List[int]]] = []
+        if attention_qk_sharing_active:
+            qkv_specs.append(("qk", target_layers["q"]))
+        else:
+            for target in attention_qkv_targets:
+                qkv_specs.append((target, target_layers[target]))
+        if "v" in attention_qkv_target_set and all(label != "v" for label, _ in qkv_specs):
+            qkv_specs.append(("v", target_layers["v"]))
+
+        for _, layers in qkv_specs:
+            qkv_total, qkv_embedding_like = self._count_xgram_container_params_per_layer(
+                layers,
+                dim_by_layer=attention_dim_by_layer,
+                hash_enabled=hash_enabled,
+                shortconv_enabled=shortconv_enabled,
+                kernels=kernels,
+                hash_total_capacity=hash_total_capacity,
+            )
+            total += qkv_total
+            embedding_like += qkv_embedding_like
+
+        o_total, o_embedding_like = self._count_xgram_container_params(
+            target_layers["o"],
+            dim=self.d_model,
+            hash_enabled=hash_enabled,
+            shortconv_enabled=shortconv_enabled,
+            kernels=kernels,
+            hash_total_capacity=hash_total_capacity,
+        )
+        total += o_total
+        embedding_like += o_embedding_like
+
+        return total, embedding_like
+
+    def _retoken_injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+        h_layers = _resolve_layers(getattr(cfg, "h_layers", None), default_layers=list(cfg.layers))
+        module_count = len(h_layers)
+        embedding_like = module_count * self.d_model * self.vocab_size
+        total = embedding_like + module_count * self.d_model
+        return total, embedding_like
+
+    def _mort_injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+        h_layers = _resolve_layers(getattr(cfg, "h_layers", None), default_layers=list(cfg.layers))
+        module_count = len(h_layers)
+        embedding_like = module_count * self.d_model * self.vocab_size
+        total = embedding_like
+        per_block_counts: Dict[int, int] = {}
+        for layer_idx in h_layers:
+            per_block_counts[layer_idx] = per_block_counts.get(layer_idx, 0) + 1
+        for num_embeddings in per_block_counts.values():
+            total += self.d_model * num_embeddings  # weight generator weight
+            total += num_embeddings  # weight generator bias
+            total += self.d_model  # mort sparse scaler
+        return total, embedding_like
+
+    def _engram_injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+
+        h_layers = _resolve_layers(getattr(cfg, "h_layers", None), default_layers=list(cfg.layers))
+        if not h_layers:
+            return 0, 0
+        if len(set(h_layers)) != len(h_layers):
+            raise OLMoConfigurationError(
+                "Engram supports at most one module per layer; duplicate layer indices were provided"
+            )
+
+        engram_mode = str(getattr(cfg, "engram_mode", "2gram+3gram"))
+        mode_parts = {token.strip() for token in engram_mode.split("+") if token.strip()}
+        ngram_levels = sorted(int(part.replace("gram", "")) for part in mode_parts)
+        if len(ngram_levels) == 0:
+            raise OLMoConfigurationError("Engram mode requires at least one n-gram level")
+        if any(level < 2 for level in ngram_levels):
+            raise OLMoConfigurationError("Engram mode only supports n-gram levels >= 2")
+
+        hc_mult = int(getattr(cfg, "engram_hc_mult", 1))
+        ngram_heads = int(getattr(cfg, "engram_ngram_heads", 4))
+        target_capacity = int(getattr(cfg, "engram_ngram_target_buckets", 75968))
+        dim_per_ngram_cfg = getattr(cfg, "engram_dim_per_ngram", None)
+        dim_per_level = int(dim_per_ngram_cfg) if dim_per_ngram_cfg is not None else self.d_model // len(ngram_levels)
+
+        if dim_per_level < 1:
+            raise OLMoConfigurationError("ENGRAM_NGRAM_DIM must be >= 1")
+        if ngram_heads < 1:
+            raise OLMoConfigurationError("ENGRAM_NGRAM_HEADS must be >= 1")
+        if dim_per_level % ngram_heads != 0:
+            raise OLMoConfigurationError(
+                f"ENGRAM_NGRAM_DIM ({dim_per_level}) must be divisible by heads ({ngram_heads})"
+            )
+        if target_capacity < 1:
+            raise OLMoConfigurationError("ENGRAM_NGRAM_TARGET_BUCKETS must be > 0")
+
+        engram_hidden_size = len(ngram_levels) * dim_per_level
+        total = 0
+        embedding_like = 0
+        seen_primes: Set[int] = set()
+        per_head_capacity = max(2, max(ngram_heads, target_capacity) // ngram_heads)
+        align = 16
+        for _layer_idx in h_layers:
+            embedding_like_per_module = 0
+            for _ in ngram_levels:
+                current = per_head_capacity
+                primes: List[int] = []
+                for _ in range(ngram_heads):
+                    prime = _next_prime(current, seen_primes)
+                    primes.append(prime)
+                    seen_primes.add(prime)
+                    current = prime + 1
+                total_embeddings = ((sum(primes) + align - 1) // align) * align
+                embedding_like_per_module += total_embeddings * (dim_per_level // ngram_heads)
+
+            total_per_module = embedding_like_per_module
+            total_per_module += engram_hidden_size * self.d_model  # value_proj
+            total_per_module += hc_mult * engram_hidden_size * self.d_model  # key_projs
+            total_per_module += 2 * hc_mult * self.d_model  # norm1 + norm2
+            if bool(getattr(cfg, "engram_shortconv_enabled", True)):
+                kernel_size = int(getattr(cfg, "engram_shortconv_kernel", 4))
+                total_per_module += self.d_model * hc_mult * kernel_size  # depthwise conv
+                total_per_module += hc_mult * self.d_model  # per-hc RMSNorm weights
+
+            total += total_per_module
+            embedding_like += embedding_like_per_module
+
+        return total, embedding_like
+
+    def _fallback_injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+        embedding_like = len(cfg.layers) * self.d_model * self.vocab_size
+        total = embedding_like
+        if (cfg.mode or "None") == "Retoken":
+            total += len(cfg.layers) * self.d_model
+        return total, embedding_like
+
+    def _injection_param_counts(self) -> Tuple[int, int]:
+        cfg = self.embedding_injection
+        if cfg is None:
+            return 0, 0
+        mode = str(cfg.mode or "None").strip()
+        if mode == "X-gram":
+            return self._xgram_injection_param_counts()
+        if mode == "Retoken":
+            return self._retoken_injection_param_counts()
+        if mode == "Mort":
+            return self._mort_injection_param_counts()
+        if mode == "Engram":
+            return self._engram_injection_param_counts()
+        return self._fallback_injection_param_counts()
 
     @property
     def num_params(self) -> int:
@@ -535,18 +907,8 @@ class TransformerConfig(Config):
 
         # Embedding params.
         num_params += self.d_model * self.vocab_size
-        if self.embedding_injection is not None:
-            # Injection embedding parameters.
-            num_params += len(self.embedding_injection.layers) * self.d_model * self.vocab_size
-
-            # Gate parameter count.
-            injection_version = self.embedding_injection.mode or "None"
-            if injection_version == "X-gram":
-                # X-gram: each injection module contributes one scalar gate parameter.
-                num_params += len(self.embedding_injection.layers)
-            elif injection_version == "Retoken":
-                # Retoken: additional per-dimension scaling vectors.
-                num_params += len(self.embedding_injection.layers) * self.d_model
+        injection_total_params, _ = self._injection_param_counts()
+        num_params += injection_total_params
 
         # All block params.
         num_block_params = self.block.num_params(self.d_model)
@@ -573,18 +935,8 @@ class TransformerConfig(Config):
 
         # Embedding params.
         num_active_params += self.d_model * self.vocab_size
-        if self.embedding_injection is not None:
-            # Injection embedding parameters.
-            num_active_params += len(self.embedding_injection.layers) * self.d_model * self.vocab_size
-
-            # Gate parameter count.
-            injection_version = self.embedding_injection.mode or "None"
-            if injection_version == "X-gram":
-                # X-gram: each injection module contributes one scalar gate parameter.
-                num_active_params += len(self.embedding_injection.layers)
-            elif injection_version == "Retoken":
-                # Retoken: additional per-dimension scaling vectors.
-                num_active_params += len(self.embedding_injection.layers) * self.d_model
+        injection_total_params, _ = self._injection_param_counts()
+        num_active_params += injection_total_params
 
         # All block active params.
         num_active_block_params = self.block.num_active_params(self.d_model)
@@ -607,14 +959,16 @@ class TransformerConfig(Config):
         """
         The number of parameters excluding embedding parameters.
         """
-        return self.num_params - self.d_model * self.vocab_size
+        _, injection_embedding_like_params = self._injection_param_counts()
+        return self.num_params - self.d_model * self.vocab_size - injection_embedding_like_params
 
     @property
     def num_active_non_embedding_params(self) -> int:
         """
         The number of active parameters excluding embedding parameters.
         """
-        return self.num_active_params - self.d_model * self.vocab_size
+        _, injection_embedding_like_params = self._injection_param_counts()
+        return self.num_active_params - self.d_model * self.vocab_size - injection_embedding_like_params
 
     def num_flops_per_token(self, seq_len: int) -> int:
         """

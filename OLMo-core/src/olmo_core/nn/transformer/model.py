@@ -51,10 +51,9 @@ from ..embedding_injection.engram import (
     apply_engram_pre_block,
     build_engram_modules,
 )
+from ..embedding_injection.ops.hash_injection import HashTokenMapInjection
 from ..embedding_injection.metrics import (
     _warmup_scale_to_python_float,
-    static_injection_logger,
-    static_o_injection_logger,
 )
 from ..embedding_injection.mort import build_mort_modules, init_mort_modules, prepare_mort_block_kwargs
 from ..embedding_injection.ops.shortconv import SwiGLUShortConv
@@ -96,6 +95,20 @@ log = logging.getLogger(__name__)
 
 _XGRAM_TARGET_SET = {"h", "q", "k", "v", "o"}
 _QKVO_TARGET_SET = {"q", "k", "v", "o"}
+
+
+def _embedding_like_numel(module: Optional[nn.Module]) -> int:
+    if module is None:
+        return 0
+    if isinstance(module, nn.Embedding):
+        return int(module.weight.numel())
+    if isinstance(module, HashTokenMapInjection):
+        total = int(module._bucket_embedding.weight.numel())
+        total += sum(int(emb.weight.numel()) for emb in module._scalar_weight_embeddings)
+        return total
+    if isinstance(module, EngramModule):
+        return sum(int(emb.weight.numel()) for emb in module.ngram_embeddings)
+    return 0
 
 
 def _parse_ordered_injection_targets(
@@ -1302,7 +1315,6 @@ class Transformer(nn.Module):
             raw_irr = inj_norm / (h_norm + eps)
             gamma_val = gate.detach().reshape(-1).float()
             gamma_scalar = gamma_val[0] if gamma_val.numel() > 0 else torch.tensor(0.0)
-            effective_irr = torch.abs(gamma_scalar) * inj_norm / (h_norm + eps)
             cos_sim = F.cosine_similarity(h_flat, inj_flat, dim=-1).mean()
             input_ok = (
                 input_embedding is not None
@@ -1326,7 +1338,6 @@ class Transformer(nn.Module):
                 f"analysis/layer_{layer_idx}/h_norm": h_norm.item(),
                 f"analysis/layer_{layer_idx}/inj_norm": inj_norm.item(),
                 f"analysis/layer_{layer_idx}/irr_raw": raw_irr.item(),
-                f"analysis/layer_{layer_idx}/irr_effective": effective_irr.item(),
                 f"analysis/layer_{layer_idx}/cos_sim": cos_sim.item(),
                 f"analysis/layer_{layer_idx}/gamma": gamma_scalar.item(),
             }
@@ -1514,8 +1525,6 @@ class Transformer(nn.Module):
                     self,
                     context,
                     warmup_scale_tensor=warmup_scale_tensor,
-                    static_qkv_log_fn=static_injection_logger,
-                    static_o_log_fn=static_o_injection_logger,
                 )
                 h = xgram_result.hidden_states
                 block_kwargs.update(xgram_result.block_kwargs)
@@ -1528,36 +1537,15 @@ class Transformer(nn.Module):
                 "_injection_h_embeddings": None,
                 "_injection_h_gates": None,
                 "_injection_qk_delta": None,
-                "_injection_qk_count": None,
-                "_injection_qk_last_gate": None,
-                "_injection_qk_last_lambda_raw": None,
                 "_injection_q_delta": None,
-                "_injection_q_count": None,
-                "_injection_q_last_gate": None,
-                "_injection_q_last_lambda_raw": None,
                 "_injection_k_delta": None,
-                "_injection_k_count": None,
-                "_injection_k_last_gate": None,
-                "_injection_k_last_lambda_raw": None,
                 "_injection_v_delta": None,
-                "_injection_v_count": None,
-                "_injection_v_last_gate": None,
-                "_injection_v_last_lambda_raw": None,
                 "_injection_warmup_scale": None,
                 "_injection_version": "None",
                 "_injection_sc_rmsnorm_eps": 1e-5,
                 "_injection_targets": (),
-                "_injection_qkv_log_fn": None,
-                "_injection_log_input_embedding": None,
-                "_injection_log_layer_idx": None,
-                "_injection_log_step": None,
-                "_injection_log_interval": None,
                 "input_ids": None,
                 "_injection_o_delta": None,
-                "_injection_o_count": None,
-                "_injection_o_last_gate": None,
-                "_injection_o_last_lambda_raw": None,
-                "_injection_o_log_fn": None,
                 "_retoken_embeddings": None,
                 "_retoken_scalers": None,
             }
@@ -2167,16 +2155,11 @@ class Transformer(nn.Module):
     def num_non_embedding_params(self) -> int:
         if self._cached_num_non_embedding_params is None:
             params = sum(p.numel() for p in self.parameters())
-            if self.embeddings is not None:
-                params -= self.embeddings.weight.numel()
+            params -= _embedding_like_numel(self.embeddings)
             for module_dict in self._all_injection_embedding_module_dicts(include_retoken=True):
                 for embeddings in module_dict.values():
                     for embedding in embeddings:
-                        if isinstance(embedding, EngramModule):
-                            for ngram_emb in embedding.ngram_embeddings:
-                                params -= ngram_emb.weight.numel()
-                        elif hasattr(embedding, "weight"):
-                            params -= embedding.weight.numel()
+                        params -= _embedding_like_numel(embedding)
             self._cached_num_non_embedding_params = params
         return self._cached_num_non_embedding_params
 

@@ -395,8 +395,6 @@ def prepare_xgram_block_kwargs(
     context: InjectionBlockContext,
     *,
     warmup_scale_tensor: torch.Tensor,
-    static_qkv_log_fn: Any,
-    static_o_log_fn: Any,
 ) -> InjectionBlockResult:
     h = context.hidden_states
     block_kwargs: Dict[str, Any] = {}
@@ -461,7 +459,7 @@ def prepare_xgram_block_kwargs(
                 device=h.device,
                 dtype=h.dtype,
             )
-            delta_qk, count_qk, last_gate_qk, last_lambda_raw_qk = compute_injection_delta(
+            delta_qk, _, _, _ = compute_injection_delta(
                 embeddings=transformer._injection_qk_embeddings[block_key],
                 gates=transformer._injection_qk_gates[block_key],
                 shortconvs=qk_shortconvs,
@@ -474,9 +472,6 @@ def prepare_xgram_block_kwargs(
                 disable_depth_scale=transformer._injection_depth_scale_disabled,
             )
             block_kwargs["_injection_qk_delta"] = delta_qk
-            block_kwargs["_injection_qk_count"] = count_qk
-            block_kwargs["_injection_qk_last_gate"] = last_gate_qk
-            block_kwargs["_injection_qk_last_lambda_raw"] = last_lambda_raw_qk
 
         target_module_specs = []
         if transformer._injection_q_embeddings is not None:
@@ -499,7 +494,7 @@ def prepare_xgram_block_kwargs(
             target_shortconvs = None
             if block_key in shortconv_dict and len(shortconv_dict[block_key]) > 0:
                 target_shortconvs = shortconv_dict[block_key]
-            delta_target, count_target, last_gate_target, last_lambda_raw_target = compute_injection_delta(
+            delta_target, _, _, _ = compute_injection_delta(
                 embeddings=emb_dict[block_key],
                 gates=gate_dict[block_key],
                 shortconvs=target_shortconvs,
@@ -512,17 +507,10 @@ def prepare_xgram_block_kwargs(
                 disable_depth_scale=transformer._injection_depth_scale_disabled,
             )
             block_kwargs[f"_injection_{target_label}_delta"] = delta_target
-            block_kwargs[f"_injection_{target_label}_count"] = count_target
-            block_kwargs[f"_injection_{target_label}_last_gate"] = last_gate_target
-            block_kwargs[f"_injection_{target_label}_last_lambda_raw"] = last_lambda_raw_target
 
         block_kwargs["_injection_warmup_scale"] = warmup_scale_tensor
         block_kwargs.setdefault("_injection_sc_rmsnorm_eps", transformer._shortconv_rmsnorm_eps)
         block_kwargs.setdefault("_injection_targets", transformer._injection_targets)
-        block_kwargs.setdefault("_injection_qkv_log_fn", static_qkv_log_fn)
-        block_kwargs.setdefault("_injection_log_layer_idx", block_idx)
-        block_kwargs.setdefault("_injection_log_step", context.step)
-        block_kwargs.setdefault("_injection_log_interval", transformer._injection_log_interval)
 
     if block_key in transformer._injection_o_embeddings and transformer._injection_o_embeddings[block_key]:
         o_gates = transformer._injection_o_gates[block_key] if block_key in transformer._injection_o_gates else []
@@ -537,7 +525,7 @@ def prepare_xgram_block_kwargs(
             device=h.device,
             dtype=h.dtype,
         )
-        delta_o, count_o, last_gate_o, last_lambda_raw_o = compute_injection_delta(
+        delta_o, _, _, _ = compute_injection_delta(
             embeddings=transformer._injection_o_embeddings[block_key],
             gates=o_gates,
             shortconvs=o_shortconvs,
@@ -550,17 +538,9 @@ def prepare_xgram_block_kwargs(
             disable_depth_scale=transformer._injection_depth_scale_disabled,
         )
         block_kwargs["_injection_o_delta"] = delta_o
-        block_kwargs["_injection_o_count"] = count_o
-        block_kwargs["_injection_o_last_gate"] = last_gate_o
-        block_kwargs["_injection_o_last_lambda_raw"] = last_lambda_raw_o
         block_kwargs["input_ids"] = input_ids
         block_kwargs.setdefault("_injection_warmup_scale", warmup_scale_tensor)
         block_kwargs.setdefault("_injection_sc_rmsnorm_eps", transformer._shortconv_rmsnorm_eps)
         block_kwargs.setdefault("_injection_targets", transformer._injection_targets)
-        block_kwargs.setdefault("_injection_log_input_embedding", context.input_embedding)
-        block_kwargs.setdefault("_injection_log_layer_idx", block_idx)
-        block_kwargs.setdefault("_injection_log_step", context.step)
-        block_kwargs.setdefault("_injection_log_interval", transformer._injection_log_interval)
-        block_kwargs["_injection_o_log_fn"] = static_o_log_fn
 
     return InjectionBlockResult(hidden_states=h, block_kwargs=block_kwargs)

@@ -648,27 +648,10 @@ class Attention(AttentionBase):
         B, T, _ = x.shape
 
         _injection_qk_delta = kwargs.get("_injection_qk_delta")
-        _injection_qk_count = kwargs.get("_injection_qk_count")
-        _injection_qk_last_gate = kwargs.get("_injection_qk_last_gate")
-        _injection_qk_last_lambda_raw = kwargs.get("_injection_qk_last_lambda_raw")
         _injection_q_delta = kwargs.get("_injection_q_delta")
-        _injection_q_count = kwargs.get("_injection_q_count")
-        _injection_q_last_gate = kwargs.get("_injection_q_last_gate")
-        _injection_q_last_lambda_raw = kwargs.get("_injection_q_last_lambda_raw")
         _injection_k_delta = kwargs.get("_injection_k_delta")
-        _injection_k_count = kwargs.get("_injection_k_count")
-        _injection_k_last_gate = kwargs.get("_injection_k_last_gate")
-        _injection_k_last_lambda_raw = kwargs.get("_injection_k_last_lambda_raw")
         _injection_v_delta = kwargs.get("_injection_v_delta")
-        _injection_v_count = kwargs.get("_injection_v_count")
-        _injection_v_last_gate = kwargs.get("_injection_v_last_gate")
-        _injection_v_last_lambda_raw = kwargs.get("_injection_v_last_lambda_raw")
-        _injection_warmup_scale = kwargs.get("_injection_warmup_scale")
         _injection_targets = kwargs.get("_injection_targets")
-        _injection_qkv_log_fn = kwargs.get("_injection_qkv_log_fn")
-        _injection_log_layer_idx = kwargs.get("_injection_log_layer_idx")
-        _injection_log_step = kwargs.get("_injection_log_step")
-        _injection_log_interval = kwargs.get("_injection_log_interval", 100)
         qkv_injection_present = any(
             modules is not None
             for modules in (
@@ -693,49 +676,10 @@ class Attention(AttentionBase):
             q_orig, k_orig = self.w_q(x), self.w_k(x)
             v_orig = self.w_v(x)
 
-            warmup_scale = _injection_warmup_scale
-            if warmup_scale is None:
-                warmup_scale = torch.tensor(1.0, dtype=torch.float32, device=x.device)
-            elif not torch.is_tensor(warmup_scale):
-                warmup_scale = torch.tensor(warmup_scale, dtype=torch.float32, device=x.device)
-            else:
-                warmup_scale = warmup_scale.to(dtype=torch.float32, device=x.device)
-            last_gate = torch.ones(1, dtype=torch.float32, device=x.device)
-            last_lambda_raw = torch.ones(1, dtype=torch.float32, device=x.device)
-
-            def _refresh_log_scalars(
-                count: int,
-                gate: Optional[torch.Tensor],
-                lambda_raw: Optional[torch.Tensor],
-            ) -> None:
-                nonlocal last_gate, last_lambda_raw
-                if count <= 0:
-                    return
-                if gate is not None:
-                    last_gate = gate.detach().to(dtype=torch.float32, device=x.device)
-                if lambda_raw is not None:
-                    last_lambda_raw = lambda_raw.detach().to(dtype=torch.float32, device=x.device)
-
             delta_qk = _injection_qk_delta
-            count_qk = _injection_qk_count if _injection_qk_count is not None else 0
-            qk_last_gate = _injection_qk_last_gate
-            qk_last_lambda_raw = _injection_qk_last_lambda_raw
-            _refresh_log_scalars(count_qk, qk_last_gate, qk_last_lambda_raw)
             delta_q = _injection_q_delta
-            count_q = _injection_q_count if _injection_q_count is not None else 0
-            q_last_gate = _injection_q_last_gate
-            q_last_lambda_raw = _injection_q_last_lambda_raw
-            _refresh_log_scalars(count_q, q_last_gate, q_last_lambda_raw)
             delta_k = _injection_k_delta
-            count_k = _injection_k_count if _injection_k_count is not None else 0
-            k_last_gate = _injection_k_last_gate
-            k_last_lambda_raw = _injection_k_last_lambda_raw
-            _refresh_log_scalars(count_k, k_last_gate, k_last_lambda_raw)
             delta_v = _injection_v_delta
-            count_v = _injection_v_count if _injection_v_count is not None else 0
-            v_last_gate = _injection_v_last_gate
-            v_last_lambda_raw = _injection_v_last_lambda_raw
-            _refresh_log_scalars(count_v, v_last_gate, v_last_lambda_raw)
 
             q = q_orig
             k = k_orig
@@ -750,29 +694,6 @@ class Attention(AttentionBase):
                 q_delta = delta_q_effective.view(B, T, self.n_kv_heads, self.head_dim)
                 q_delta = repeat_kv(q_delta, self.n_rep).reshape(B, T, -1)
                 q = q_orig + q_delta.to(dtype=q_orig.dtype, device=q_orig.device)
-
-            total_count = (2 * count_qk) + count_q + count_k + count_v
-            if (
-                total_count > 0
-                and _injection_qkv_log_fn is not None
-                and _injection_log_layer_idx is not None
-                and _injection_log_step is not None
-            ):
-                delta_terms = []
-                if delta_qk is not None:
-                    delta_terms.extend([delta_qk, delta_qk])
-                delta_terms.extend(d for d in (delta_q, delta_k, delta_v) if d is not None)
-                if delta_terms:
-                    _injection_qkv_log_fn(
-                        h_prev=v_orig,
-                        injection_delta=sum(delta_terms),
-                        gate=last_gate,
-                        lambda_raw=last_lambda_raw,
-                        layer_idx=_injection_log_layer_idx,
-                        step=_injection_log_step,
-                        warmup_scale=warmup_scale,
-                        log_interval=_injection_log_interval,
-                    )
         else:
             # shape: (batch_size, seq_len, n_heads * head_dim),
             #        (batch_size, seq_len, n_kv_heads * head_dim),
@@ -847,39 +768,7 @@ class Attention(AttentionBase):
 
         _inj_o_delta = kwargs.get("_injection_o_delta")
         if _inj_o_delta is not None:
-            _inj_o_count = kwargs.get("_injection_o_count")
-            _inj_o_last_gate = kwargs.get("_injection_o_last_gate")
-            _inj_o_last_lambda_raw = kwargs.get("_injection_o_last_lambda_raw")
-            warmup_scale = kwargs.get("_injection_warmup_scale")
-            if warmup_scale is None:
-                warmup_scale = torch.tensor(1.0, dtype=torch.float32, device=output.device)
-            elif not torch.is_tensor(warmup_scale):
-                warmup_scale = torch.tensor(warmup_scale, dtype=torch.float32, device=output.device)
-            else:
-                warmup_scale = warmup_scale.to(dtype=torch.float32, device=output.device)
-            log_fn = kwargs.get("_injection_o_log_fn") or kwargs.get("_injection_qkv_log_fn")
-            log_layer = kwargs.get("_injection_log_layer_idx")
-            log_step = kwargs.get("_injection_log_step")
-            log_input_emb = kwargs.get("_injection_log_input_embedding")
-            inj_o_count = _inj_o_count if _inj_o_count is not None else 0
-            if inj_o_count > 0:
-                if (
-                    log_fn is not None
-                    and log_layer is not None
-                    and _inj_o_last_gate is not None
-                ):
-                    log_fn(
-                        h_prev=output,
-                        injection_delta=_inj_o_delta,
-                        gate=_inj_o_last_gate,
-                        lambda_raw=_inj_o_last_lambda_raw,
-                        input_embedding=log_input_emb,
-                        layer_idx=log_layer,
-                        step=log_step,
-                        warmup_scale=warmup_scale,
-                        log_interval=_injection_log_interval,
-                    )
-                output = output + _inj_o_delta.to(dtype=output.dtype, device=output.device)
+            output = output + _inj_o_delta.to(dtype=output.dtype, device=output.device)
 
         return output
 

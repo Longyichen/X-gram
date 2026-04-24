@@ -210,8 +210,6 @@ class TransformerBlock(TransformerBlockBase):
             # Even when only O injection is enabled (without Q/K/V), attention
             # still needs input_ids and the related injection settings.
             kwargs.setdefault("input_ids", input_ids)
-            if "_injection_o_log_fn" in kwargs or "_injection_qkv_log_fn" in kwargs:
-                kwargs["_injection_o_log_fn"] = kwargs.get("_injection_o_log_fn") or kwargs.get("_injection_qkv_log_fn")
             kwargs.setdefault("_injection_warmup_scale", kwargs.get("_injection_warmup_scale", 1.0))
             kwargs.setdefault("_injection_sc_rmsnorm_eps", kwargs.get("_injection_sc_rmsnorm_eps", 1e-5))
             kwargs.setdefault("_injection_targets", kwargs.get("_injection_targets", []))

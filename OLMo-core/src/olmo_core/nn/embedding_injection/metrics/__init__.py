@@ -1,11 +1,5 @@
-from .logger import (
-    _warmup_scale_to_python_float,
-    static_injection_logger,
-    static_o_injection_logger,
-)
+from .utils import _warmup_scale_to_python_float
 
 __all__ = [
     "_warmup_scale_to_python_float",
-    "static_injection_logger",
-    "static_o_injection_logger",
 ]
