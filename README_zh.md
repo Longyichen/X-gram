@@ -151,9 +151,8 @@ YAML 配置控制模型规模、数据路径、batch size、训练 token 数量�
 | --- | --- |
 | `xgram_3h_2v_hash.yaml` | 推荐 X-gram recipe，包含 hidden/value injection 与 hash routing。 |
 | `xgram_2v_hash.yaml` | 双 view value-stream 的 X-gram hash routing 配置。 |
-| `qkvoh-hash-share.yaml` | Q/K/V/O/H 全路径注入，包含 shared QK path 与 hash routing。 |
 | `qk-share.yaml` | 不使用 hash routing 的 shared QK injection。 |
-| `1h1v1o.yaml` | 较小的 non-hashed X-gram ablation。 |
+| `1h1v1o.yaml` | 较小的 non-hashed X-gram。 |
 | `engram.yaml` | [Engram paper](https://arxiv.org/abs/2601.07372) baseline。 |
 | `retoken.yaml` | [ReToken paper](https://openreview.net/forum?id=VjAOHI1owB) baseline。 |
 | `mort.yaml` | [MoRT paper](https://openreview.net/forum?id=VjAOHI1owB) baseline。 |

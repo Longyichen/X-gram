@@ -226,9 +226,8 @@ organized by model scale under `configs/l10/` and `configs/l12/`.
 | --- | --- |
 | `xgram_3h_2v_hash.yaml` | Recommended X-gram recipe with hidden and value injection plus hash routing. |
 | `xgram_2v_hash.yaml` | Two-view value-stream X-gram with hash routing. |
-| `qkvoh-hash-share.yaml` | Broad Q/K/V/O/H injection with shared QK path and hash routing. |
 | `qk-share.yaml` | QK shared injection without hash routing. |
-| `1h1v1o.yaml` | Smaller non-hashed X-gram ablation. |
+| `1h1v1o.yaml` | Smaller non-hashed X-gram. |
 | `engram.yaml` | [Engram paper](https://arxiv.org/abs/2601.07372) baseline. |
 | `retoken.yaml` | [ReToken paper](https://openreview.net/forum?id=VjAOHI1owB) baseline. |
 | `mort.yaml` | [MoRT paper](https://openreview.net/forum?id=VjAOHI1owB) baseline. |
