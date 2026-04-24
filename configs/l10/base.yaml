@@ -1,0 +1,35 @@
+run:
+  experiment_name: baseline-no-injection
+  save_root: olmo2-streaming/runs
+
+data:
+  streaming_data_path:
+    - "1"
+    - /tmp/dclm-baseline-0.25b-l10-streaming-v2-yaml-0
+    - /tmp/dclm-baseline-1.0-streaming
+  streaming_tokenizer_model: /tmp/models/Qwen3-0.6B
+  streaming_ckpt_path: /tmp/olmo_stream_ckpts/dataloader.ckpt
+  use_token_column: tokens
+  text_chunk_size: 40960
+  prefetch_queue_size: 16
+  pack_method: native:truncate
+
+model:
+  num_layers: 10
+  hidden_size: 1536
+  ffn_hidden_size: 4096
+  num_attn_heads: 12
+  num_query_groups: 6
+
+training:
+  micro_batch_size: 8
+  global_batch_size: 1024
+  train_tokens: 41400000000
+  lr: 0.001
+
+evaluation:
+  downstream:
+    enabled: false
+    eval_interval: 400
+
+embedding_injection: null
